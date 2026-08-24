@@ -29,6 +29,25 @@ _LANGUAGE_BUILTIN_GLOBALS: frozenset[str] = frozenset({
     "print", "open", "isinstance", "type", "super", "sorted", "reversed",
     "any", "all", "abs", "round", "next", "iter", "hash", "id", "repr",
     "callable", "getattr", "setattr", "hasattr", "delattr", "vars", "dir",
+    # Swift standard library / Foundation / SwiftUI (#2147). Value-type
+    # initializers (Data(x), Int(x), UUID()) and protocol conformance targets
+    # appear from virtually every file of a Swift codebase, exactly like the
+    # ECMAScript constructors above. String/Date/URL/Error are already listed.
+    "Int", "Int8", "Int16", "Int32", "Int64",
+    "UInt", "UInt8", "UInt16", "UInt32", "UInt64",
+    "Double", "Float", "Bool", "Character",
+    "Sendable", "Codable", "Decodable", "Encodable", "Equatable", "Hashable",
+    "Identifiable", "Comparable", "CaseIterable", "RawRepresentable",
+    "CustomStringConvertible", "CustomDebugStringConvertible", "AnyObject",
+    "LocalizedError",
+    "Data", "UUID", "Decimal", "Calendar", "Locale", "TimeZone", "Bundle",
+    "IndexPath", "IndexSet", "NotificationCenter", "UserDefaults",
+    "FileManager", "URLSession", "URLRequest", "URLComponents",
+    "JSONDecoder", "JSONEncoder", "DateFormatter", "NumberFormatter",
+    "ISO8601DateFormatter",
+    "NSObject", "NSString", "NSError", "NSLock", "NSAttributedString",
+    "DispatchQueue", "DispatchGroup", "OperationQueue", "RunLoop",
+    "View", "Color", "Font",
 })
 
 
@@ -51,7 +70,14 @@ def _file_stem(path: Path) -> str:
     Top-level files keep a bare stem (``setup.py`` -> ``setup``). When passed an
     absolute path the whole path is encoded; the extract() id-remap post-pass
     re-derives the canonical repo-relative form from ``source_file`` so the on-disk
-    location can't leak into the persisted IDs (#502)."""
+    location can't leak into the persisted IDs (#502).
+
+    Returns "" for a path with no name (``Path('.')`` — a source_file that equals
+    the scan root, so it has no per-file stem). Guarding here keeps
+    ``path.with_suffix("")`` from raising ``ValueError: '.' has an empty name`` and
+    protects every caller, not just ``_semantic_id_remap`` (#1618)."""
+    if not path.name:
+        return ""
     return path.with_suffix("").as_posix()
 
 

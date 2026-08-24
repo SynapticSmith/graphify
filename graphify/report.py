@@ -2,7 +2,32 @@
 from __future__ import annotations
 import re
 from datetime import date
+from pathlib import Path
 import networkx as nx
+
+
+def _portable_root_label(root: str) -> str:
+    """Portable label for the report header — the project directory basename.
+
+    GRAPH_REPORT.md is a tracked artifact in practice, so its header must not
+    bake the generator host's absolute path into the file: the same graph would
+    otherwise produce different bytes on different machines and leak the build
+    machine's directory layout into git history (#2628, same class as #2598).
+
+    Taking the basename strips any leading absolute path without touching the
+    filesystem, and makes `graphify update .`, `graphify update ./proj`, and
+    `graphify update /abs/path/proj` all label the header `proj`. Only the
+    degenerate `.`/``/`..` cases need a cwd resolve to recover the real name;
+    if even that fails, fall back to the raw value.
+    """
+    raw = str(root).replace("\\", "/")
+    name = Path(raw).name
+    if name in ("", ".", ".."):
+        try:
+            name = Path(raw).resolve().name
+        except (OSError, RuntimeError):
+            name = ""
+    return name or raw
 
 
 def _safe_community_name(label: str) -> str:
@@ -82,6 +107,7 @@ def generate(
     min_community_size: int = 3,
     built_at_commit: str | None = None,
     learning: dict | None = None,
+    obsidian: bool = False,
 ) -> str:
     today = date.today().isoformat()
 
@@ -100,7 +126,7 @@ def generate(
     inf_avg = round(sum(inf_scores) / len(inf_scores), 2) if inf_scores else None
 
     lines = [
-        f"# Graph Report - {root}  ({today})",
+        f"# Graph Report - {_portable_root_label(root)}  ({today})",
         "",
         "## Corpus Check",
     ]
@@ -140,14 +166,21 @@ def generate(
             "- Run `graphify update .` after code changes (no API cost).",
         ]
 
-    # Community hub navigation - links to _COMMUNITY_*.md files in the Obsidian vault.
-    # Without these, GRAPH_REPORT.md is a dead-end and the vault splits into disconnected components.
+    # Community hub navigation. The `_COMMUNITY_*.md` notes these wikilinks target
+    # are only created by the opt-in `--obsidian` export, and the report is written
+    # at build time (before any export runs), so emitting wikilinks by default left
+    # every link dangling — polluting an Obsidian vault's graph view and rendering as
+    # literal brackets everywhere else (#1712). Emit wikilinks only when the caller
+    # signals Obsidian output; otherwise a plain list, which navigates nowhere-to-break.
     if non_empty:
         lines += ["", "## Community Hubs (Navigation)"]
         for cid in non_empty:
             label = community_labels.get(cid, f"Community {cid}")
-            safe = _safe_community_name(label)
-            lines.append(f"- [[_COMMUNITY_{safe}|{label}]]")
+            if obsidian:
+                safe = _safe_community_name(label)
+                lines.append(f"- [[_COMMUNITY_{safe}|{label}]]")
+            else:
+                lines.append(f"- {label}")
 
     lines += [
         "",
@@ -176,20 +209,30 @@ def generate(
     else:
         lines.append("- None detected - all connections are within the same source files.")
 
-    # Circular imports surfaced from file-level dependency graph.
-    from .analyze import find_import_cycles
-    cycles = find_import_cycles(G)
-    lines += ["", "## Import Cycles"]
-    if cycles:
-        for c in cycles:
-            cycle = c.get("cycle", [])
-            length = c.get("length", len(cycle))
-            if not cycle:
-                continue
-            cycle_path = " -> ".join(cycle + [cycle[0]])
-            lines.append(f"- {length}-file cycle: `{cycle_path}`")
-    else:
-        lines.append("- None detected.")
+    # Circular imports surfaced from file-level dependency graph. Only meaningful
+    # for code — a documents-only corpus has no imports, so the section is pure
+    # noise there ("None detected" on every run). Emit it only when the graph
+    # actually contains code (#1657).
+    _has_code = any(
+        d.get("file_type") == "code" for _, d in G.nodes(data=True)
+    ) or any(
+        d.get("relation") in ("imports", "imports_from")
+        for *_e, d in G.edges(data=True)
+    )
+    if _has_code:
+        from .analyze import find_import_cycles
+        cycles = find_import_cycles(G)
+        lines += ["", "## Import Cycles"]
+        if cycles:
+            for c in cycles:
+                cycle = c.get("cycle", [])
+                length = c.get("length", len(cycle))
+                if not cycle:
+                    continue
+                cycle_path = " -> ".join(cycle + [cycle[0]])
+                lines.append(f"- {length}-file cycle: `{cycle_path}`")
+        else:
+            lines.append("- None detected.")
 
     hyperedges = G.graph.get("hyperedges", [])
     if hyperedges:
